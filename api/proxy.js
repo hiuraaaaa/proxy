@@ -1,9 +1,9 @@
-// /api/proxy.js — CommonJS (Vercel Node)
+// /api/proxy.js — CommonJS, tuned for sites like mangaku
 async function handler(req, res) {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,User-Agent,Referer');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,User-Agent,Referer,Cookie');
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   const target = (req.query.u || req.query.url || '').toString();
@@ -11,8 +11,6 @@ async function handler(req, res) {
 
   try {
     const t = new URL(target);
-
-    // safety
     if (!/^https?:$/.test(t.protocol)) throw new Error('protocol not allowed');
     const host = t.hostname;
     if (
@@ -21,13 +19,37 @@ async function handler(req, res) {
       host === '0.0.0.0'
     ) throw new Error('local address blocked');
 
+    // ----- Header “mirip browser” + Indonesia -----
+    const userAgent =
+      req.headers['user-agent'] ||
+      'Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+    const accept = req.headers['accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+    const acceptLang = req.headers['accept-language'] || 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7';
+
+    // Kamu bisa pakai ?ck=<cookie-string> buat nembak cookie manual kalau perlu
+    const cookieFromQuery = (req.query.ck || req.query.cookie || '').toString();
+    const cookieHeader = cookieFromQuery || ''; // browser TIDAK akan kirim cookie situs target ke domain kamu
+
+    // Beberapa situs minta referer = origin mereka
+    const referer = req.query.ref ? String(req.query.ref) : t.origin + '/';
+
+    const forwardedHeaders = {
+      'user-agent': userAgent,
+      'accept': accept,
+      'accept-language': acceptLang,
+      'referer': referer,
+      'upgrade-insecure-requests': '1',
+      'sec-fetch-site': 'none',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-user': '?1',
+      'sec-fetch-dest': 'document',
+      // jangan kirim accept-encoding biar server kirim bentuk mudah didecode
+    };
+    if (cookieHeader) forwardedHeaders['cookie'] = cookieHeader;
+    if (req.headers['authorization']) forwardedHeaders['authorization'] = req.headers['authorization'];
+
     const r = await fetch(t.toString(), {
-      headers: {
-        'user-agent': req.headers['user-agent'] ||
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
-        'accept': req.headers['accept'] || '*/*',
-        'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-      },
+      headers: forwardedHeaders,
       redirect: 'follow',
       cache: 'no-store'
     });
@@ -35,9 +57,9 @@ async function handler(req, res) {
     const ab = await r.arrayBuffer();
     const type = r.headers.get('content-type') || 'application/octet-stream';
 
-    // clone headers & bersihkan yang menghalangi
+    // Clone & buang header “penghalang”
     const headers = {};
-    for (const [k,v] of r.headers.entries()) headers[k.toLowerCase()] = v;
+    for (const [k, v] of r.headers.entries()) headers[k.toLowerCase()] = v;
     delete headers['content-security-policy'];
     delete headers['x-frame-options'];
     delete headers['cross-origin-embedder-policy'];
@@ -48,10 +70,14 @@ async function handler(req, res) {
     if (type.includes('text/html')) {
       let html = new TextDecoder(getCharset(type)).decode(new Uint8Array(ab));
 
+      // inject <base> + rewrite semua URL → lewat proxy
       html = injectBase(html, t.toString());
       html = rewriteAttrs(html, t);
       html = rewriteCssUrls(html, t);
       html = rewriteMetaRefresh(html, t);
+
+      // (opsional) tambahkan polyfill kecil agar fetch/XHR di client juga lewat proxy
+      html = injectClientHook(html, t.origin);
 
       if (!/<meta[^>]+charset=/i.test(html)) {
         html = html.replace(/<head[^>]*>/i, m => `${m}\n<meta charset="utf-8">`);
@@ -64,7 +90,7 @@ async function handler(req, res) {
       return res.send(html);
     }
 
-    // non-HTML passthrough
+    // Non-HTML passthrough (gambar, JS, CSS, video)
     res.status(r.status);
     res.setHeader('Content-Type', type);
     res.setHeader('Cache-Control', 'no-store');
@@ -76,7 +102,6 @@ async function handler(req, res) {
 }
 
 module.exports = handler;
-// (opsional) runtime nodejs — boleh dilepas juga
 module.exports.config = { runtime: 'nodejs' };
 
 /* ===== helpers ===== */
@@ -88,7 +113,6 @@ function injectBase(html, baseUrl){
   if (/<base\s/i.test(html)) return html;
   return html.replace(/<head[^>]*>/i, m => `${m}\n<base href="${escapeHtml(baseUrl)}">`);
 }
-
 function rewriteAttrs(html, base){
   const attrs = ['href','src','action','poster','data-src'];
   for (const a of attrs) {
@@ -97,13 +121,10 @@ function rewriteAttrs(html, base){
   }
   return html;
 }
-
 function rewriteCssUrls(html, base){
   return html.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/ig, (m,q,val)=>`url("${proxify(val, base)}")`);
 }
-
 function rewriteMetaRefresh(html, base){
-  // <meta http-equiv="refresh" content="3; url=/next">
   return html.replace(/<meta[^>]+http-equiv=["']refresh["'][^>]*>/ig, (tag)=>{
     const m = tag.match(/content=["']\s*\d+\s*;\s*url=([^"']+)["']/i);
     if (!m) return tag;
@@ -111,7 +132,6 @@ function rewriteMetaRefresh(html, base){
     return tag.replace(url, proxify(url, base));
   });
 }
-
 function proxify(val, base){
   val = (val||'').trim();
   if (!val) return val;
@@ -119,3 +139,42 @@ function proxify(val, base){
   let abs; try { abs = new URL(val, base).toString(); } catch { return val; }
   return '/api/proxy?u=' + encodeURIComponent(abs);
 }
+
+// Hook ringan supaya fetch/XHR di halaman target tetap lewat proxy
+function injectClientHook(html, origin){
+  const script = `
+<script>
+(()=>{try{
+  const BASE='${locationOriginSafe()}';
+  const P='/api/proxy?u=';
+  const toProxy=u=>{try{
+    if(!u) return u;
+    if(u.startsWith('data:')||u.startsWith('about:')||u.startsWith('javascript:')||u.startsWith('mailto:')||u.startsWith('tel:')) return u;
+    const abs=new URL(u, '${origin}').toString();
+    return P+encodeURIComponent(abs);
+  }catch{return u;}};
+
+  // patch fetch
+  const _f=window.fetch;
+  window.fetch=function(input, init){
+    try{
+      const url=typeof input==='string'?input:(input&&input.url)||'';
+      return _f.call(this, toProxy(url), init);
+    }catch(e){ return _f.call(this, input, init); }
+  };
+
+  // patch XHR (open)
+  const XO=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(m,u,...rest){
+    try{ return XO.call(this, m, toProxy(u), ...rest); }
+    catch(e){ return XO.call(this, m, u, ...rest); }
+  };
+}catch(e){}})();
+</script>`;
+  // sisipkan sebelum </body> (atau di akhir <head> kalau tak ada body)
+  if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, script + '\n</body>');
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, script + '\n</head>');
+  return html + script;
+}
+// helper untuk origin saat disajikan (hindari undefined di server)
+function locationOriginSafe(){ try{return (globalThis.location&&location.origin)||'';}catch{return '';} }
