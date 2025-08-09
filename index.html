@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Full Page Web Proxy</title>
+<style>
+  body{margin:0;font:16px system-ui,Segoe UI,Roboto;background:#eaf2ff;color:#0f172a}
+  .wrap{max-width:720px;margin:12vh auto 0;padding:20px}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.06);padding:16px}
+  h1{margin:0 0 10px;font-size:24px}
+  .bar{display:flex;gap:8px}
+  input{flex:1;padding:12px;border-radius:12px;border:1px solid #e5e7eb}
+  button{padding:12px 16px;border-radius:12px;border:1.5px solid #3b82f6;background:#3b82f6;color:#fff;font-weight:700;cursor:pointer}
+  p{color:#6b7280;margin:8px 0 0}
+</style>
+<div class="wrap">
+  <div class="card">
+    <h1>Full Page Proxy</h1>
+    <div class="bar">
+      <input id="u" placeholder="https://example.com">
+      <button id="go">Buka</button>
+    </div>
+    <p>Tips: kamu juga bisa langsung buka <code>/?u=https://example.com</code>.</p>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const q = new URLSearchParams(location.search);
+const param = q.get('u');
+if (param) {
+  // kalau ada ?u= di root, langsung teruskan ke /api/proxy (full page)
+  location.replace('/api/proxy?u=' + encodeURIComponent(param));
+}
+$('go').onclick = ()=>{
+  const val = $('u').value.trim();
+  if(!val) return;
+  const url = val.startsWith('http') ? val : 'https://' + val;
+  location.href = '/api/proxy?u=' + encodeURIComponent(url);
+};
+$('u').addEventListener('keydown', e=>{ if(e.key==='Enter') $('go').click(); });
+</script>
