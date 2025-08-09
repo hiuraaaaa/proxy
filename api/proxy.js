@@ -1,7 +1,8 @@
-// /api/proxy.js — Vercel (Node runtime, bukan Edge)
-export const config = { runtime: 'nodejs' };
+// /api/proxy.js — CommonJS (cocok di Vercel Node.js)
+module.exports.config = { runtime: 'nodejs' };
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,User-Agent,Referer');
@@ -67,7 +68,7 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(502).json({ ok:false, error:'fetch_failed', detail:String(e?.message||e) });
   }
-}
+};
 
 function hname(k){ return k.split('-').map(s=>s[0]?.toUpperCase()+s.slice(1)).join('-'); }
 function getCharset(ct){ const m = ct.match(/charset=([^;]+)/i); return m ? m[1].trim() : 'utf-8'; }
@@ -101,15 +102,7 @@ function proxify(val, base){
   if (val.startsWith('data:') || val.startsWith('about:') || val.startsWith('javascript:') || val.startsWith('mailto:') || val.startsWith('tel:')) return val;
   let abs; try { abs = new URL(val, base).toString(); } catch { return val; }
   return '/api/proxy?u=' + encodeURIComponent(abs);
-}  return html.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/ig, (m, q, val) => `url("${proxify(val, base)}")`);
-}
-
-function rewriteMetaRefresh(html, base){
-  // <meta http-equiv="refresh" content="3; url=/next">
-  return html.replace(/<meta[^>]+http-equiv=["']refresh["'][^>]*>/ig, (tag)=>{
-    const m = tag.match(/content=["']\s*\d+\s*;\s*url=([^"']+)["']/i);
-    if (!m) return tag;
-    const url = m[1];
+}    const url = m[1];
     const newUrl = proxify(url, base);
     return tag.replace(url, newUrl);
   });
